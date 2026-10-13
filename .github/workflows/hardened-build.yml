@@ -1,0 +1,60 @@
+name: Build Hardened Windows Client
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Get source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Apply security patch
+        shell: pwsh
+        run: |
+          python apply_hardening.py
+          if ($LASTEXITCODE -ne 0) { throw 'Security patch failed; stopping build.' }
+
+      - name: Verify security changes are present
+        shell: pwsh
+        run: |
+          $tunnel = Get-Content src-tauri/src/tunnel.rs -Raw
+          if (-not $tunnel.Contains('permitted_host(host')) { throw 'Tunnel security patch absent.' }
+          if (-not $tunnel.Contains('Blocked remote CONNECT')) { throw 'Tunnel security patch absent.' }
+          $main = Get-Content src-tauri/src/lib.rs -Raw
+          if (-not $main.Contains('Unverified in-app binary updates are disabled')) { throw 'Update safety patch absent.' }
+          $db = Get-Content src-tauri/src/db.rs -Raw
+          if (-not $db.Contains('http.proxyStrictSSL')) { throw 'IDE SSL settings patch absent.' }
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Build Windows installation packages
+        run: npm run tauri -- build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: antigravity-hardened-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
